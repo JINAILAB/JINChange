@@ -30,15 +30,12 @@ def change_channel(tensor1, tensor2):
 
     return out1, out2
 
-
-
 class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
                  base_width=64, dilation=1, norm_layer=None):
         super(BasicBlock, self).__init__()
-#normlayer를 설정해주지 않으면 batchnorm2d를 사용해줍니다.
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         if groups != 1 or base_width != 64:
@@ -67,11 +64,12 @@ class BasicBlock(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(x)
 
-        out = out + identity
+        out += identity
         out = self.relu(out)
 
         return out
-    
+
+
 class Bottleneck(nn.Module):
     # Bottleneck in torchvision places the stride for downsampling at 3x3 convolution(self.conv2)
     # while original implementation places the stride at the first 1x1 convolution(self.conv1)
@@ -86,19 +84,14 @@ class Bottleneck(nn.Module):
         super(Bottleneck, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
-				# resnext나 wideresnet의 경우 사용
-				# first layer에서의 width = int(64 * (64/64)) * 1 = 64
         width = int(planes * (base_width / 64.)) * groups
-
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
         self.bn1 = norm_layer(width)
-				# conv2에서 downsample
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
         self.bn2 = norm_layer(width)
         self.conv3 = conv1x1(width, planes * self.expansion)
         self.bn3 = norm_layer(planes * self.expansion)
-				# inplace 하면 input으로 들어온 것 자체를 수정하겠다는 뜻. 메모리 usage가 좀 좋아짐. 하지만 input을 없앰.
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
@@ -124,12 +117,14 @@ class Bottleneck(nn.Module):
         out = self.relu(out)
 
         return out
-    
-class changer_ResNet(nn.Module):
-    def __init__(self, block, layers, num_classes=1000, 
-								zero_init_residual=False, groups=1, width_per_group=64, 
-								replace_stride_with_dilation=None, norm_layer=None):
-        super(changer_ResNet, self).__init__()
+
+
+class Changer_ResNet(nn.Module):
+
+    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
+                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
+                 norm_layer=None):
+        super(Changer_ResNet, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
@@ -145,14 +140,11 @@ class changer_ResNet(nn.Module):
                              "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
         self.groups = groups
         self.base_width = width_per_group
-        
-
-        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
+                               bias=False)
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-		# stride를 dilation으로 바꿀수 있다.  
         self.layer1_1 = self._make_layer(block, 64, layers[0])
         self.layer1_2 = self.layer1_1
         
@@ -247,12 +239,15 @@ class changer_ResNet(nn.Module):
 
     def forward(self, x1, x2):
         return self._forward_impl(x1, x2)
+
     
 
 if __name__ == '__main__':
-    resnet18 = changer_ResNet(BasicBlock, [2,2,2,2])
+    device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
+    resnet18 = Changer_ResNet(BasicBlock, [2,2,2,2]).to(device)
     x1 = torch.randn(1, 3 ,256, 256)
     x2 = torch.randn(1, 3, 256, 256)
-    print(resnet18(x1,x2)[0].size())
+    print(Changer_ResNet(x1,x2)[0].size())
+    #torch.Size([1, 512, 8, 8])
     
     
