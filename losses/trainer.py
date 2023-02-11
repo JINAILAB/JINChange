@@ -25,8 +25,7 @@ class Trainer():
                 scheduler,
                 loss_func,
                 metric_funcs,
-                device,
-                logger=None):        
+                device):        
         
         self.model = model
         self.optimizer = optimizer
@@ -34,7 +33,6 @@ class Trainer():
         self.loss_func = loss_func
         self.metric_funcs = metric_funcs
         self.device = device
-        self.logger = logger
 
         self.loss = 0
         self.scores = {metric_name: 0 for metric_name, _ in self.metric_funcs.items()}
@@ -64,8 +62,6 @@ class Trainer():
                 self.scores[metric_name] += metric_func(y_pred.argmax(1), y).item() / len(dataloader)
             # History
             self.loss += loss.item()
-            self.logger.debug(f"TRAINER | train epoch: {epoch_index}, batch: {batch_id}/{len(dataloader)-1}, loss: {loss.item()}")
-            self.logger.debug(f"TRAINER | {filename}")
 
         self.scheduler.step()
         self.loss = self.loss / len(dataloader)
@@ -96,12 +92,9 @@ class Trainer():
                 self.loss += loss.item()
 
         self.loss = self.loss / len(dataloader)
-        self.logger.debug(f"TRAINER | val/test epoch: {epoch_index}, batch: {batch_id}/{len(dataloader)-1}, loss: {loss.item()}")
-        self.logger.debug(f"TRAINER | {filename}")
         
     def clear_history(self):
 
         torch.cuda.empty_cache()
         self.loss = 0
         self.scores = {metric_name: 0 for metric_name, _ in self.metric_funcs.items()}
-        self.logger.debug(f"TRAINER | Clear history, loss: {self.loss}, score: {self.scores}")

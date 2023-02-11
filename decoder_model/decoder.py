@@ -2,59 +2,27 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-class FeatureFusionNeck(nn.Module):
-    """Feature Fusion Neck.
-    Args:
-        policy (str): The operation to fuse features. candidates 
-            are `concat`, `sum`, `diff` and `Lp_distance`.
-        in_channels (Sequence(int)): Input channels.
-        channels (int): Channels after modules, before conv_seg.
-        out_indices (tuple[int]): Output from which layer.
-    """
 
-    def __init__(self,
-                 policy,
-                 in_channels=None,
-                 channels=None,
-                 out_indices=(0, 1, 2, 3)):
-        super(FeatureFusionNeck, self).__init__()
-        self.policy = policy
-        self.in_channels = in_channels
-        self.channels = channels
-        self.out_indices = out_indices
-        self.fp16_enabled = False
+    
 
-    @staticmethod
-    def fusion(x1, x2, policy):
-        """Specify the form of feature fusion"""
-        
-        _fusion_policies = ['concat', 'sum', 'diff', 'abs_diff']
-        assert policy in _fusion_policies, 'The fusion policies {} are ' \
-            'supported'.format(_fusion_policies)
-        
-        if policy == 'concat':
-            x = torch.cat([x1, x2], dim=1)
-        elif policy == 'sum':
-            x = x1 + x2
-        elif policy == 'diff':
-            x = x2 - x1
-        elif policy == 'Lp_distance':
-            x = torch.abs(x1 - x2)
+def fusion(x1, x2, policy):
+    """Specify the form of feature fusion"""
+    
+    _fusion_policies = ['concat', 'sum', 'diff', 'abs_diff']
+    assert policy in _fusion_policies, 'The fusion policies {} are ' \
+        'supported'.format(_fusion_policies)
+    
+    if policy == 'concat':
+        x = torch.cat([x1, x2], dim=1)
+    elif policy == 'sum':
+        x = x1 + x2
+    elif policy == 'diff':
+        x = x2 - x1
+    elif policy == 'Lp_distance':
+        x = torch.abs(x1 - x2)
 
-        return x
+    return x
 
-    def forward(self, x1, x2):
-        """Forward function."""
-
-        assert len(x1) == len(x2), "The features x1 and x2 from the" \
-            "backbone should be of equal length"
-        outs = []
-        for i in range(len(x1)):
-            out = self.fusion(x1[i], x2[i], self.policy)
-            outs.append(out)
-
-        outs = [outs[i] for i in self.out_indices]
-        return tuple(outs)
 
 class FDAF(nn.Module):
     """Flow Dual-Alignment Fusion Module.
@@ -68,21 +36,8 @@ class FDAF(nn.Module):
             Default: dict(type='ReLU')
     """
 
-    def __init__(self,
-                 in_channels,
-                 conv_cfg=None,
-                 norm_cfg=dict(type='IN'),
-                 act_cfg=dict(type='GELU')):
-        super(FDAF, self).__init__()
-        self.in_channels = in_channels
-        self.conv_cfg = conv_cfg
-        self.norm_cfg = norm_cfg
-        self.act_cfg = act_cfg
-        # TODO
-        conv_cfg=None
-        norm_cfg=dict(type='IN')
-        act_cfg=dict(type='GELU')
-        
+    def __init__(self, in_channels):
+        super().__init__()
         kernel_size = 5
         self.flow_make = nn.Sequential(
             nn.Conv2d(in_channels*2, in_channels*2, kernel_size=kernel_size, padding=(kernel_size-1)//2, bias=True, groups=in_channels*2),
@@ -103,7 +58,7 @@ class FDAF(nn.Module):
         if fusion_policy == None:
             return x1_feat, x2_feat
         
-        output = FeatureFusionNeck.fusion(x1_feat, x2_feat, fusion_policy)
+        output = fusion(x1_feat, x2_feat, fusion_policy)
         return output
 
     @staticmethod
@@ -119,3 +74,95 @@ class FDAF(nn.Module):
 
         output = F.grid_sample(x, grid, align_corners=True)
         return output
+
+
+class ConvModule(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride):
+        super().__init__()
+        conv1 = nn.Conv2d(in_channels, out_channels, kernel_size, stride)
+        bn = nn.BatchNorm2d(out_channels)
+        gelu = nn.GELU()
+        layers = [conv1, bn, gelu]
+        self.layers = nn.Sequential(*layers)
+    
+    def forward(self):
+        out = self.layers()
+        return out
+        
+
+class Changer(nn.Module):
+    def __init__(self, interpolate_mode='bilinear', **kwargs):
+        super().__init__(**kwargs)
+
+        self.interpolate_mode = interpolate_mode
+        num_inputs = len(self.in_channels)
+        assert num_inputs == len(self.in_index)
+        
+
+        self.convs = nn.ModuleList()
+        for i in range(num_inputs):
+            self.convs.append(
+                ConvModule(
+                    in_channels=self.in_channels[i],
+                    out_channels=self.channels,
+                    kernel_size=1,
+                    stride=1,
+                    norm_cfg=self.norm_cfg,
+                    act_cfg=self.act_cfg))
+
+        self.fusion_conv = ConvModule(
+            in_channels=self.channels * num_inputs,
+            out_channels=self.channels // 2,
+            kernel_size=1,
+            norm_cfg=self.norm_cfg)
+        
+        self.neck_layer = FDAF(in_channels=self.channels // 2)
+        
+        # projection head
+        self.discriminator = MixFFN(
+            embed_dims=self.channels,
+            feedforward_channels=self.channels,
+            ffn_drop=0.,
+            dropout_layer=dict(type='DropPath', drop_prob=0.),
+            act_cfg=dict(type='GELU'))
+                
+    def base_forward(self, inputs):
+        outs = []
+        for idx in range(len(inputs)):
+            x = inputs[idx]
+            conv = self.convs[idx]
+            outs.append(
+                resize(
+                    input=conv(x),
+                    size=inputs[0].shape[2:],
+                    mode=self.interpolate_mode,
+                    align_corners=self.align_corners))
+
+        out = self.fusion_conv(torch.cat(outs, dim=1))
+        
+        return out
+
+    def forward(self, inputs):
+        # Receive 4 stage backbone feature map: 1/4, 1/8, 1/16, 1/32
+        inputs = self._transform_inputs(inputs)
+        inputs1 = []
+        inputs2 = []
+        for input in inputs:
+            f1, f2 = torch.chunk(input, 2, dim=1)
+            inputs1.append(f1)
+            inputs2.append(f2)
+        
+        out1 = self.base_forward(inputs1)
+        out2 = self.base_forward(inputs2)
+        out = self.neck_layer(out1, out2, 'concat')
+
+        out = self.discriminator(out)
+        out = self.cls_seg(out)
+
+        return out
+
+
+
+if '__name__' == '__main__':
+    print()
+    
