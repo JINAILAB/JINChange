@@ -1,7 +1,8 @@
 import torch
-from torch import nn
+from torch import nn, Tensor
 from einops.layers.torch import Rearrange
 from einops import rearrange
+from typing import Any, Callable, List, Optional, Type, Union
 
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
     """3x3 convolution with padding"""
@@ -31,15 +32,24 @@ def change_channel(tensor1, tensor2):
     return out1, out2
 
 class BasicBlock(nn.Module):
-    expansion = 1
+    expansion: int = 1
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None):
-        super(BasicBlock, self).__init__()
+    def __init__(
+        self,
+        inplanes: int,
+        planes: int,
+        stride: int = 1,
+        downsample: Optional[nn.Module] = None,
+        groups: int = 1,
+        base_width: int = 64,
+        dilation: int = 1,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+    ) -> None:
+        super().__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         if groups != 1 or base_width != 64:
-            raise ValueError('BasicBlock only supports groups=1 and base_width=64')
+            raise ValueError("BasicBlock only supports groups=1 and base_width=64")
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
@@ -51,7 +61,7 @@ class BasicBlock(nn.Module):
         self.downsample = downsample
         self.stride = stride
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         identity = x
 
         out = self.conv1(x)
@@ -121,9 +131,14 @@ class Bottleneck(nn.Module):
 
 class Changer_ResNet(nn.Module):
 
-    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False,
-                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
-                 norm_layer=None):
+    def __init__(self,
+                 block: Type[Union[BasicBlock, Bottleneck]],
+                 layers: List[int],
+                 zero_init_residual: bool = False,
+                 groups=1, 
+                 width_per_group=64, 
+                 replace_stride_with_dilation=None,
+                 norm_layer=None) -> None:
         super(Changer_ResNet, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -145,6 +160,9 @@ class Changer_ResNet(nn.Module):
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        
+        layer0_ls = [self.conv1, self.bn1, self.relu, self.maxpool]
+        self.layer0 = nn.Sequential(*layer0_ls)
         self.layer1_1 = self._make_layer(block, 64, layers[0])
         self.layer1_2 = self.layer1_1
         
@@ -159,9 +177,8 @@ class Changer_ResNet(nn.Module):
         self.layer4_1 = self._make_layer(block, 512, layers[3], stride=2,
                                        dilate=replace_stride_with_dilation[2])
         self.layer4_2 = self.layer4_1
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
-
+        
+        
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -179,7 +196,14 @@ class Changer_ResNet(nn.Module):
                 elif isinstance(m, BasicBlock):
                     nn.init.constant_(m.bn2.weight, 0)
 
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
+    def _make_layer(
+        self,
+        block: Type[Union[BasicBlock, Bottleneck]],
+        planes: int,
+        blocks: int,
+        stride: int = 1,
+        dilate: bool = False,
+    ) -> nn.Sequential:
         norm_layer = self._norm_layer
         downsample = None
         previous_dilation = self.dilation
@@ -193,27 +217,30 @@ class Changer_ResNet(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample, self.groups,
-                            self.base_width, previous_dilation, norm_layer))
+        layers.append(
+            block(
+                self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, norm_layer
+            )
+        )
         self.inplanes = planes * block.expansion
         for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes, groups=self.groups,
-                                base_width=self.base_width, dilation=self.dilation,
-                                norm_layer=norm_layer))
+            layers.append(
+                block(
+                    self.inplanes,
+                    planes,
+                    groups=self.groups,
+                    base_width=self.base_width,
+                    dilation=self.dilation,
+                    norm_layer=norm_layer,
+                )
+            )
 
         return nn.Sequential(*layers)
 
     def _forward_impl(self, x1, x2):
         # See note [TorchScript super()]
-        x1 = self.conv1(x1)
-        x1 = self.bn1(x1)
-        x1 = self.relu(x1)
-        x1 = self.maxpool(x1)
-        
-        x2 = self.conv1(x2)
-        x2 = self.bn1(x2)
-        x2 = self.relu(x2)
-        x2 = self.maxpool(x2)
+        x1 = self.layer0(x1)
+        x2 = self.layer0(x2)
         
         x1_1 = self.layer1_1(x1)
         x1_2 = self.layer1_2(x2)
@@ -222,20 +249,29 @@ class Changer_ResNet(nn.Module):
         x1_2 = change_spatial(x1_2)
         
         
+        
         x2_1 = self.layer2_1(x1_1)
         x2_2 = self.layer2_2(x1_2)
         
         x2_1, x2_2 = change_channel(x2_1, x2_2)
+        
         
         x3_1 = self.layer3_1(x2_1)
         x3_2 = self.layer3_2(x2_2)
         
         x3_1, x3_2 = change_channel(x3_1, x3_2)
         
+        
         x4_1 = self.layer4_1(x3_1)
         x4_2 = self.layer4_2(x3_2)
-
-        return x4_1, x4_2
+        
+        
+        x1 = torch.cat([x1_1, x1_2], dim=1)
+        x2 = torch.cat([x2_1, x2_2], dim=1)
+        x3 = torch.cat([x3_1, x3_2], dim=1)
+        x4 = torch.cat([x4_1, x4_2], dim=1)
+        
+        return x1, x2, x3, x4
 
     def forward(self, x1, x2):
         return self._forward_impl(x1, x2)
@@ -245,9 +281,12 @@ class Changer_ResNet(nn.Module):
 if __name__ == '__main__':
     device = torch.device("cuda" if torch.cuda.is_available() else 'cpu')
     resnet18 = Changer_ResNet(BasicBlock, [2,2,2,2]).to(device)
-    x1 = torch.randn(1, 3 ,256, 256)
-    x2 = torch.randn(1, 3, 256, 256)
-    print(Changer_ResNet(x1,x2)[0].size())
+    x1 = torch.randn(1, 3 ,512, 512)
+    x2 = torch.randn(1, 3, 512, 512)
+    print(resnet18(x1,x2)[0].size()) # 1, 128, 128, 128
+    print(resnet18(x1,x2)[1].size()) # 1, 64, 64, 64
+    print(resnet18(x1,x2)[2].size()) # 1, 512, 32, 32
+    print(resnet18(x1,x2)[3].size()) # 1, 1024, 16, 16
     #torch.Size([1, 512, 8, 8])
     
     
